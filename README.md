@@ -54,6 +54,19 @@ Linux 上默认装的是 CUDA 版 torch，约 6.6 GB；后面训练 ACT 要用�
 python IK/so101_cartesian_demo.py prepare --model-dir models/so101
 ```
 
+## 测试与工具
+
+```bash
+python tests/test_bringup.py                            # 31 条软件测试，接假机械臂，不碰硬件
+python tests/test_bringup.py --model-dir models/so101   # 加上数值 IK 检查，需要上面装好的环境
+python tools/build_control_poses.py --model-dir models/so101 --output control-poses.json
+```
+
+`tests/` 只用假硬件，`tools/` 只做模型计算，两者都不打开串口。
+改过 `Bringup/` 或 `IK/` 里的程序，先跑一遍测试再提交。
+
+能跑的东西只在这个仓里。课程网站上的同名文件只用来下载，不在网站里执行。
+
 ## 三样东西不进仓
 
 `.venv/` 体积太大且跟机器绑定；`calibration/` 记的是你这一台实物的中位与活动范围，

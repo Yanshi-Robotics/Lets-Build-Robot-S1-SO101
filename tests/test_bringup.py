@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""Software-only tests for the Bringup and IK programs. Fakes are test fixtures, never hardware evidence.
+
+    python tests/test_bringup.py
+    python tests/test_bringup.py --model-dir models/so101   # adds the numerical IK checks
+"""
+import argparse
+import ast
+import importlib.util
+import math
+import sys
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+# The course programs are loaded from their published paths; keep bytecode out of the tree.
+sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+scan = load("bus_check", ROOT / "Bringup/so101_bus_check.py")
+calibrate = load("calibrate_entry", ROOT / "Bringup/so101_calibrate.py")
+demo = load("cartesian_demo", ROOT / "IK/so101_cartesian_demo.py")
+sys.modules["so101_cartesian_demo"] = demo
+visual = load("visual_control", ROOT / "IK/so101_visual_control.py")
+
+
+class VisualControlTests(unittest.TestCase):
+    def test_interpolation_endpoints_and_midpoint(self):
+        start, goal = [0] * 5, [2, -2, 4, -4, 0]
+        self.assertEqual(visual.interpolation(start, goal, 0), start)
+        self.assertEqual(visual.interpolation(start, goal, 1), goal)
+        self.assertEqual(visual.interpolation(start, goal, 0.5), [1, -1, 2, -2, 0])
+
+    def test_no_extrapolation_or_nonfinite_interpolation(self):
+        for value in (-0.1, 1.1, math.nan):
+            with self.assertRaises(ValueError):
+                visual.interpolation([0] * 5, [1] * 5, value)
+        with self.assertRaises(ValueError):
+            visual.interpolation([math.nan] * 5, [1] * 5, 0.5)
+
+    def test_execute_requires_current_single_owner(self):
+        request = visual.Request("execute", 1, 10)
+        visual.check_request(request, 1, 10.1, {1})
+        for owner, now, connected in [(2, 10.1, {1}), (1, 11, {1}), (1, 9, {1}), (1, 10.1, set()), (1, 10.1, {1, 2})]:
+            with self.assertRaises(ValueError):
+                visual.check_request(request, owner, now, connected)
+
+    def test_preview_rejected_when_arm_moves(self):
+        preview = visual.Preview((0,) * 5, (1,) * 5, (0.1, 0, 0.2))
+        visual.check_preview(preview, [0.1] * 5)
+        for value in ([1] * 5, [math.nan] * 5, [0] * 6):
+            with self.assertRaises(ValueError):
+                visual.check_preview(preview, value)
+        with self.assertRaises(ValueError):
+            visual.check_preview(None, [0] * 5)
+
+    def test_preview_is_immutable(self):
+        from dataclasses import FrozenInstanceError
+        preview = visual.Preview((0,) * 5, (1,) * 5, (0, 0, 0))
+        with self.assertRaises(FrozenInstanceError):
+            preview.joints = (2,) * 5
+
+    def test_visual_joint_mapping_uses_names_and_radians(self):
+        names = ["gripper", *reversed(demo.JOINTS)]
+        values = visual.viewer_configuration(names, [0, 30, 60, 90, 180])
+        self.assertEqual(values[0], visual.PREVIEW_GRIPPER_RAD)
+        self.assertAlmostEqual(values[1], math.pi)
+        with self.assertRaises(ValueError):
+            visual.viewer_configuration(["wrong"], [0] * 5)
+
+    def test_hardware_arguments_fail_before_run(self):
+        from unittest.mock import patch
+        with patch.object(visual, "run") as run, patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                visual.main(["--model-dir", "not-a-device", "--web-port", "4602", "--readback"])
+            run.assert_not_called()
+
+    def test_visual_readback_never_writes_or_changes_torque(self):
+        tree = ast.parse(Path(visual.__file__).read_text())
+        called = {node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+        self.assertFalse(called & {"send_action", "write", "sync_write", "enable_torque", "disable_torque", "configure", "configure_and_hold", "write_calibration"})
+        disconnects = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "disconnect"]
+        self.assertEqual(len(disconnects), 1)
+        self.assertTrue(any(keyword.arg == "disable_torque" and isinstance(keyword.value, ast.Constant) and keyword.value.value is False for keyword in disconnects[0].keywords))
+
+
+class BusReadTests(unittest.TestCase):
+    def bus(self):
+        return SimpleNamespace(port="test-fixture-not-a-device", is_connected=True,
+            connect=Mock(), read=Mock(return_value=0),
+            sync_read=Mock(return_value={name: 2048 for name in scan.JOINT_NAMES}), disconnect=Mock())
+
+    def run_scan(self, bus):
+        scan.check_bus(bus, role="follower", samples=3, interval=0, output=Mock(), sleep=Mock())
+
+    def test_six_motors_and_readonly_disconnect(self):
+        bus = self.bus()
+        self.run_scan(bus)
+        self.assertEqual(bus.sync_read.call_count, 3)
+        bus.disconnect.assert_called_once_with(disable_torque=False)
+
+    def test_no_register_writes_in_scan_source(self):
+        tree = ast.parse(Path(scan.__file__).read_text())
+        called = {node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+        self.assertFalse(called & {"write", "sync_write", "enable_torque", "disable_torque", "configure", "write_calibration"})
+
+    def test_failed_handshake_closes_open_port(self):
+        bus = self.bus()
+        bus.connect.side_effect = RuntimeError("handshake failed")
+        with self.assertRaises(RuntimeError):
+            self.run_scan(bus)
+        bus.disconnect.assert_called_once_with(disable_torque=False)
+
+    def test_enabled_torque_is_rejected(self):
+        bus = self.bus()
+        bus.read.return_value = 1
+        with self.assertRaises(RuntimeError):
+            self.run_scan(bus)
+        bus.sync_read.assert_not_called()
+
+    def test_missing_motor_is_rejected(self):
+        bus = self.bus()
+        bus.sync_read.return_value = {"shoulder_pan": 10}
+        with self.assertRaises(RuntimeError):
+            self.run_scan(bus)
+
+    def test_nonfinite_read_is_rejected(self):
+        bus = self.bus()
+        bus.sync_read.return_value["gripper"] = math.nan
+        with self.assertRaises(RuntimeError):
+            self.run_scan(bus)
+
+
+class CalibrationTests(unittest.TestCase):
+    def test_official_calibration_without_robot_connect(self):
+        events = []
+        bus = SimpleNamespace(is_connected=True, connect=lambda: events.append("bus-connect"),
+            disable_torque=lambda: events.append("disable"),
+            configure_motors=lambda: events.append("configure-bus"),
+            disconnect=lambda **kwargs: events.append(("disconnect", kwargs)))
+        device = SimpleNamespace(bus=bus, calibrate=lambda: events.append("calibrate"), connect=Mock())
+        calibrate.calibrate_device(device)
+        self.assertEqual(events[:4], ["bus-connect", "disable", "configure-bus", "calibrate"])
+        self.assertEqual(events[-2:], ["disable", ("disconnect", {"disable_torque": False})])
+        device.connect.assert_not_called()
+
+    def test_failure_stays_disabled_and_closes(self):
+        bus = SimpleNamespace(is_connected=True, connect=Mock(), disable_torque=Mock(), configure_motors=Mock(), disconnect=Mock())
+        device = SimpleNamespace(bus=bus, calibrate=Mock(side_effect=RuntimeError("calibration failed")))
+        with self.assertRaises(RuntimeError):
+            calibrate.calibrate_device(device)
+        self.assertEqual(bus.disable_torque.call_count, 2)
+        bus.disconnect.assert_called_once_with(disable_torque=False)
+
+    def test_bus_configuration_failure_skips_calibration(self):
+        bus = SimpleNamespace(is_connected=True, connect=Mock(), disable_torque=Mock(),
+            configure_motors=Mock(side_effect=RuntimeError("configuration failed")), disconnect=Mock())
+        device = SimpleNamespace(bus=bus, calibrate=Mock())
+        with self.assertRaises(RuntimeError):
+            calibrate.calibrate_device(device)
+        device.calibrate.assert_not_called()
+        self.assertEqual(bus.disable_torque.call_count, 2)
+        bus.disconnect.assert_called_once_with(disable_torque=False)
+
+
+class HoldTests(unittest.TestCase):
+    def fixture(self, fail_at=None, bad_raw=False):
+        events = []
+        def record(event):
+            events.append(event)
+            if event == fail_at:
+                raise RuntimeError("injected test failure")
+        def read_raw(*args, **kwargs):
+            record("read-final-position")
+            return {name: (4095 if bad_raw and name == "elbow_flex" else 2048) for name in scan.JOINT_NAMES}
+        def read_goal(*args, **kwargs):
+            record("confirm-hold")
+            return 2048
+        bus = SimpleNamespace(
+            motors={name: SimpleNamespace(model="sts3215") for name in scan.JOINT_NAMES},
+            model_resolution_table={"sts3215": 4096},
+            disable_torque=lambda: record("disable"), configure_motors=lambda: record("configure"),
+            write=lambda register, *args: record("write-" + register), sync_read=read_raw, read=read_goal,
+            sync_write=lambda *args, **kwargs: record("hold-target"), enable_torque=lambda: record("enable"))
+        arm = SimpleNamespace(bus=bus,
+            config=SimpleNamespace(position_p_coefficient=16, position_i_coefficient=0, position_d_coefficient=32),
+            calibration={name: SimpleNamespace(range_min=1024, range_max=3072) for name in scan.JOINT_NAMES})
+        return arm, {name: (-80, 80) for name in demo.JOINTS}, events
+
+    def test_enable_only_after_final_read_and_hold(self):
+        arm, limits, events = self.fixture()
+        demo.configure_and_hold(arm, limits, position_mode=0)
+        self.assertEqual(events[0], "disable")
+        self.assertEqual(events[-1], "enable")
+        self.assertEqual(events.count("confirm-hold"), 6)
+        self.assertLess(events.index("read-final-position"), events.index("hold-target"))
+        self.assertLess(events.index("hold-target"), events.index("confirm-hold"))
+        self.assertLess(events.index("configure"), events.index("read-final-position"))
+
+    def test_each_configuration_failure_never_enables(self):
+        for stage in ("disable", "configure", "write-Operating_Mode", "write-P_Coefficient", "write-Protection_Current", "read-final-position", "hold-target", "confirm-hold"):
+            with self.subTest(stage=stage):
+                arm, limits, events = self.fixture(fail_at=stage)
+                with self.assertRaises(RuntimeError):
+                    demo.configure_and_hold(arm, limits, position_mode=0)
+                self.assertNotIn("enable", events)
+
+    def test_undelivered_hold_target_never_enables(self):
+        arm, limits, events = self.fixture()
+        arm.bus.read = Mock(return_value=0)
+        with self.assertRaises(RuntimeError):
+            demo.configure_and_hold(arm, limits, position_mode=0)
+        self.assertNotIn("enable", events)
+
+    def test_post_configuration_position_rechecked(self):
+        arm, limits, events = self.fixture(bad_raw=True)
+        with self.assertRaises(ValueError):
+            demo.configure_and_hold(arm, limits, position_mode=0)
+        self.assertNotIn("hold-target", events)
+        self.assertNotIn("enable", events)
+
+    def test_calibration_and_model_limit_intersection(self):
+        arm, limits, _ = self.fixture()
+        arm.calibration["shoulder_pan"] = SimpleNamespace(range_min=2000, range_max=2100)
+        bound = demo.calibrated_limits(arm, limits)["shoulder_pan"]
+        self.assertAlmostEqual(bound[1], 100 * 180 / 4095)
+        self.assertLess(bound[1], limits["shoulder_pan"][1])
+
+
+class BoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.limits = {name: (-90, 90) for name in demo.JOINTS}
+        self.args = SimpleNamespace(max_joint_step_deg=2, session_joint_envelope_deg=8, session_xyz_envelope_mm=20)
+
+    def test_gripper_must_not_enter_five_joint_solver(self):
+        with self.assertRaises(ValueError):
+            demo.validate_joints([0] * 6, self.limits)
+
+    def test_nonfinite_and_outside_joint_values(self):
+        for value in (math.nan, math.inf, 91):
+            with self.assertRaises(ValueError):
+                demo.validate_joints([value, 0, 0, 0, 0], self.limits)
+
+    def test_small_step_allowed(self):
+        demo.check_step([0]*5, [1]*5, [0]*5, [0, 0, 0.002], [0]*3, self.args)
+
+    def test_large_joint_step_rejected(self):
+        with self.assertRaises(ValueError):
+            demo.check_step([0]*5, [3]*5, [0]*5, [0]*3, [0]*3, self.args)
+
+    def test_joint_session_envelope_rejected(self):
+        with self.assertRaises(ValueError):
+            demo.check_step([8]*5, [9]*5, [0]*5, [0]*3, [0]*3, self.args)
+
+    def test_xyz_session_envelope_rejected(self):
+        with self.assertRaises(ValueError):
+            demo.check_step([0]*5, [1]*5, [0]*5, [0, 0, 0.021], [0]*3, self.args)
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--model-dir", type=Path)
+args = parser.parse_args()
+
+
+@unittest.skipUnless(args.model_dir, "optional numerical check requires a pinned model directory and kinematics dependencies")
+class NumericalTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.kinematics, cls.limits = demo.load_kinematics(args.model_dir)
+
+    def test_six_small_axis_targets(self):
+        import numpy as np
+        seed = np.array(demo.PREVIEW_JOINTS_DEG)
+        for axis in range(3):
+            for sign in (-1, 1):
+                target = self.kinematics.forward_kinematics(seed)[:3, 3].copy()
+                target[axis] += sign * demo.STEP_MM / 1000
+                solved, actual, residual = demo.solve_position(self.kinematics, seed, target, self.limits)
+                self.assertEqual(len(solved), 5)
+                self.assertLessEqual(residual, demo.IK_TOLERANCE_MM)
+                self.assertLessEqual(np.linalg.norm(actual - target) * 1000, demo.IK_TOLERANCE_MM)
+
+    def test_unreachable_target_rejected(self):
+        with self.assertRaises((ValueError, RuntimeError)):
+            demo.solve_position(self.kinematics, demo.PREVIEW_JOINTS_DEG, [1, 1, 1], self.limits)
+
+    def test_viser_urdf_meshes_and_fk_match_the_solver(self):
+        # Real Viser/yourdfpy loading; only scene transport is a test fixture.
+        # No listener, browser, serial port, or hardware is opened by this test.
+        import numpy as np
+        import yourdfpy
+        from functools import partial
+        from viser.extras import ViserUrdf
+        model_path = args.model_dir / demo.URDF_NAME
+        model = yourdfpy.URDF.load(model_path, filename_handler=partial(yourdfpy.filename_handler_magic, dir=model_path.parent))
+        scene = SimpleNamespace(add_frame=Mock(side_effect=lambda *a, **kw: SimpleNamespace(**kw)), add_mesh_simple=Mock())
+        viewer = ViserUrdf(SimpleNamespace(scene=scene), model, root_node_name="/test", mesh_color_override=visual.CURRENT_COLOR)
+        self.assertGreater(scene.add_mesh_simple.call_count, 0)
+        for call in scene.add_mesh_simple.call_args_list:
+            self.assertGreater(len(call.args[1]), 0)
+            self.assertGreater(len(call.args[2]), 0)
+            self.assertTrue(np.isfinite(call.args[1]).all())
+        for seed in (demo.PREVIEW_JOINTS_DEG, [10, -25, 55, -25, 10]):
+            viewer.update_cfg(np.array(visual.viewer_configuration(viewer.get_actuated_joint_names(), seed)))
+            np.testing.assert_allclose(model.get_transform("gripper_frame_link"), self.kinematics.forward_kinematics(seed), atol=1e-8)
+
+
+if __name__ == "__main__":
+    unittest.main(argv=[__file__], verbosity=2)
