@@ -81,4 +81,4 @@ Three folders are ignored by git. `.venv/` is large and specific to one machine.
 
 ## License
 
-The course programs are all rights reserved. LeRobot is Apache-2.0 ([huggingface/lerobot](https://github.com/huggingface/lerobot)); the SO-101 model follows the license in [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100).
+The course programs are all rights reserved. LeRobot is Apache-2.0 ([huggingface/lerobot](https://github.com/huggingface/lerobot)); the SO-101 model is also Apache-2.0 ([TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100)).

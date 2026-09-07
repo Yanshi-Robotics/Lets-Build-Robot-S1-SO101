@@ -81,4 +81,4 @@ python tests/test_bringup.py --model-dir models/so101   # 加上数值 IK 检查
 
 ## 许可
 
-课程程序保留所有权利。LeRobot 采用 Apache-2.0（[huggingface/lerobot](https://github.com/huggingface/lerobot)）；SO-101 模型遵循 [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) 仓库里的许可。
+课程程序保留所有权利。LeRobot 采用 Apache-2.0（[huggingface/lerobot](https://github.com/huggingface/lerobot)）；SO-101 模型同样采用 Apache-2.0（[TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100)）。
