@@ -1,0 +1,12 @@
+# 共用的 Python 环境：6.6 G，按第 3/7/8 课的命令重建
+.venv/
+
+# 运行时产物
+__pycache__/
+*.pyc
+
+# 校准结果：跟着这一台实物走，换机器就不对
+calibration/
+
+# 第 7 课 prepare 从 TheRobotStudio 锁定 commit 下载的模型，随时可重取
+models/
