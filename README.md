@@ -1,36 +1,36 @@
-# 一起手搓机器人 · 第一季 · LeRobot SO-101
+# Let's Build a Robot · Season 1 · SO-101
 
-[English](README.en.md)
+![Python 3.12](https://img.shields.io/badge/Python-3.12-3776ab?style=flat-square)
+![LeRobot 0.6.1](https://img.shields.io/badge/LeRobot-0.6.1-ffcc4d?style=flat-square)
+![License: all rights reserved](https://img.shields.io/badge/License-All_rights_reserved-555?style=flat-square)
 
-这个仓库放《一起手搓机器人》第一季的全部课程程序。配套教程在 [yanshirobotics.com 学习中心](https://www.yanshirobotics.com/learn/lerobot/season-1)，每课的下载按钮旁边都印着文件在这里的路径。克隆过仓库的话，按那个路径找文件，不用再下载。
+<a href="README.md"><img src="https://img.shields.io/badge/Language-English-2f81f7?style=flat-square" alt="English"></a>
+<a href="docs/i18n/zh/README.md"><img src="https://img.shields.io/badge/%E8%AF%AD%E8%A8%80-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-e67e22?style=flat-square" alt="简体中文"></a>
 
-## 文件夹
+Course programs for Season 1 of *Let's Build a Robot*, a video course that builds and trains the LeRobot SO-101 arm.
 
-程序按主题分文件夹，一个主题一个文件夹，不按课次编号：同一份程序常常跨好几课。
+---
 
-| 文件夹 | 里面是什么 | 哪几课用 |
-|---|---|---|
-| `Bringup/` | `so101_bus_check.py` 通信检查、`so101_calibrate.py` 校准 | 第 6 课 |
-| `IK/` | `so101_cartesian_demo.py` 逆运动学计算、`so101_visual_control.py` 三维控制界面 | 第 7 课 |
-| `tests/` | 31 条软件测试，用假硬件跑 | 改程序时 |
-| `tools/` | `build_control_poses.py`，生成原理图所用的运动学数据 | 重画原理图时 |
+## Overview
 
-教程按这些路径引用文件，所以文件不会移动或改名；以后的任务各占一个新文件夹，例如 `ACT-1-Pick`。`IK/` 里两个程序互相调用，必须在同一个文件夹。
+Season 1 starts with printing and assembling two SO-101 arms and ends with a trained policy that sorts objects by color and hands them to a person. Each lesson at the [Yanshi Robotics Learning Center](https://www.yanshirobotics.com/learn/lerobot/season-1) that uses a program shows a download button, and next to the button it prints the file's path in this repository. Clone the repository once and every file is where the lesson says it is.
 
-## 命令在仓库根目录执行
+---
 
-所有命令都在仓库根目录执行，不进入子文件夹。教程里 `models/so101`、`calibration/follower` 这些相对路径就都成立，每一课写法相同。
+## What's in the repository
 
-```bash
-source .venv/bin/activate
-python IK/so101_cartesian_demo.py preview --model-dir models/so101 --delta-mm 0 0 2
-```
+- **`Bringup/`**: `so101_bus_check.py` reads all six motors on one bus; `so101_calibrate.py` records each joint's mid position and range. Used in Lesson 6.
+- **`IK/`**: `so101_cartesian_demo.py` solves inverse kinematics for a gripper target; `so101_visual_control.py` shows the arm in a browser and previews the solved pose. Used in Lesson 7. The two files import each other and stay in the same folder.
+- **`tests/`**: 31 tests that run the programs against fake hardware.
+- **`tools/`**: `build_control_poses.py` computes the poses drawn in the lesson illustrations.
 
-Python 会把程序自己所在的文件夹加进模块搜索路径，所以 `IK/so101_visual_control.py` 能找到同文件夹的 `so101_cartesian_demo.py`。
+The lessons print these paths, so files here are not moved or renamed. Later tasks get their own folders, such as `ACT-1-Pick`.
 
-## 环境
+---
 
-课程锁定 Python 3.12 与 LeRobot `0.6.1`。虚拟环境（venv）是仓库根目录下的 `.venv` 文件夹，把课程依赖和系统 Python 隔开。按第 3、7、8 课的顺序安装：
+## Installation
+
+Python 3.12 and LeRobot 0.6.1, in a virtual environment at the repository root. This is the same sequence Lessons 3, 7, and 8 use.
 
 ```bash
 python3.12 -m venv .venv
@@ -43,37 +43,42 @@ python -m pip install "lerobot[core_scripts,feetech]==0.6.1"
 python -m pip check
 ```
 
-最后一条输出 `No broken requirements found.` 就装好了。Linux 上默认安装带 CUDA 的 torch，约 6.6 GB；后面训练 ACT（Action Chunking Transformer，第 13 课讲的策略模型）要用它。
+`pip check` prints `No broken requirements found.` when the environment is complete. On Linux the default torch wheel includes CUDA and the environment takes about 6.6 GB; the training lessons later in the season use it.
 
-机械臂模型由第 7 课的 `prepare` 从 TheRobotStudio 的锁定版本下载到 `models/so101`：
+Download the arm model once. It comes from TheRobotStudio's pinned revision:
 
 ```bash
 python IK/so101_cartesian_demo.py prepare --model-dir models/so101
 ```
 
-终端显示 `Model ready: models/so101/so101_new_calib.urdf` 即完成。出现 `STOP` 时先解决终端所报的问题，再执行一次。
+The command prints `Model ready: models/so101/so101_new_calib.urdf`. If it prints `STOP`, fix the reported problem and run it again.
 
-## 测试
+---
 
-改过 `Bringup/` 或 `IK/` 里的程序，先跑测试再提交：
+## Running the programs
 
-```bash
-python tests/test_bringup.py                            # 只用假硬件
-python tests/test_bringup.py --model-dir models/so101   # 加上数值 IK 检查
-```
-
-第一条最后一行是 `OK (skipped=3)`，跳过的 3 条需要模型；第二条是 `OK`，31 条全跑。两条都不打开串口。
-
-`tools/build_control_poses.py` 只做模型计算，产出网站原理图所用的 JSON：
+Run everything from the repository root. The lessons use relative paths such as `models/so101` and `calibration/follower`, and those resolve only from here.
 
 ```bash
-python tools/build_control_poses.py --model-dir models/so101 --output control-poses.json
+source .venv/bin/activate
+python IK/so101_cartesian_demo.py preview --model-dir models/so101 --delta-mm 0 0 2
 ```
 
-## 不进仓库的三样
+This computes the joint angles that move the gripper 2 mm up and prints them as JSON; `position_error_mm` should be below 0.1. It touches no hardware. The programs in `Bringup/`, and the `jog` and `--readback` modes in `IK/`, do open a serial port; Lessons 6 and 7 cover the power and safety steps for those, and this file does not repeat them.
 
-`.venv/` 太大，而且跟机器绑定；`calibration/` 记的是你这一台机械臂的中位与活动范围，换一台就不对；`models/` 是上游资产，用上面的 `prepare` 命令重新下载。
+Before committing a change to a program, run the tests:
 
-## 许可与来源
+```bash
+python tests/test_bringup.py                            # fake hardware only, ends with OK (skipped=3)
+python tests/test_bringup.py --model-dir models/so101   # adds the numerical IK checks, ends with OK
+```
 
-课程程序保留所有权利。上游依赖与模型各有各的许可：LeRobot 见 [huggingface/lerobot](https://github.com/huggingface/lerobot)，SO-101 模型见 [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100)。
+Neither command opens a serial port.
+
+Three folders are ignored by git. `.venv/` is large and specific to one machine. `calibration/` holds the mid positions and ranges of one particular arm and is wrong for any other. `models/` is downloaded by the `prepare` command above.
+
+---
+
+## License
+
+The course programs are all rights reserved. LeRobot is Apache-2.0 ([huggingface/lerobot](https://github.com/huggingface/lerobot)); the SO-101 model follows the license in [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100).
